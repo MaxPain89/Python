@@ -1,11 +1,17 @@
 import argparse
 import logging
 from selenium.webdriver.remote.remote_connection import LOGGER
-from time import sleep
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as ec
+from selenium.webdriver.common.by import By
+import yaml
 import os
+import requests
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+
+MAIN_PAGE_URL = "https://www.noip.com/"
 
 XPATH_CAPCHA_FRAME_SELECTOR = '//*[@id="recaptcha_block"]/div/div/div/iframe'
 
@@ -28,7 +34,118 @@ XPATH_CAPCHA_CHECK_SELECTOR = '//*[@id="recaptcha-anchor"]/div[5]'
 XPATH_FINAL_ACCEPT_BTN_SELECTOR = '//*[@id="content"]/section[3]' \
                                   '/div/div/div[1]/p[2]/a[2]'
 
+XPATH_EXPIRES_LABEL = '//*[@id="host-panel"]/table/tbody/tr/td[1]' \
+                      '/div/span/span/div/a'
+
+EXPIRES_LABEL_PREFIX = 'Expires in '
+# sms.ru constants
+SMS_TEMPLATE = "Your no-ip hostname expires in %d days"
+SMS_API_URL = "https://sms.ru/sms/send"
+
 log = logging.getLogger(__name__)
+
+
+class Config:
+    def __init__(self, config_dict):
+        self.threshold = config_dict["threshold"]
+        self.username = config_dict["no_ip"]["username"]
+        self.password = config_dict["no_ip"]["password"]
+        self.headless = config_dict["driver"]["headless"]
+        self.path_to_driver = config_dict["driver"]["path"]
+        self.api_id = config_dict["sms.ru"]["api_id"]
+        self.phone_number = config_dict["sms.ru"]["phone_number"]
+
+
+class Checker:
+    def __init__(self):
+        self.driver = None
+        self.waiter = None
+        self.username = None
+        self.password = None
+
+    def configure(self, conf):
+        self.driver = self._get_driver(conf.path_to_driver, conf.headless)
+        self.username = conf.username
+        self.password = conf.password
+        self.waiter = self._get_waiter(self.driver)
+
+    @staticmethod
+    def _get_driver(driver_path, headless_mode=True):
+        chrome_driver_path = get_path(driver_path)
+        log.info("Find driver %s", chrome_driver_path)
+        log.info("Initializing selenium chrome web driver...")
+        chrome_options = Options()
+        if headless_mode:
+            chrome_options.add_argument("--headless")
+        return webdriver.Chrome(executable_path=chrome_driver_path,
+                                options=chrome_options)
+
+    @staticmethod
+    def _get_waiter(driver, timeout=30):
+        return WebDriverWait(driver, timeout=timeout)
+
+    def _click_and_expect_element(self, clickable_elem_selector,
+                                  expected_elem_selector=None):
+        element = self.driver.find_element_by_xpath(clickable_elem_selector)
+        element.click()
+        if expected_elem_selector:
+            self.waiter.until(ec.visibility_of_element_located(
+                (By.XPATH, expected_elem_selector)))
+
+    def _fill_filed(self, field_selector, value):
+        field = self.driver.find_element_by_xpath(
+            field_selector)
+        field.send_keys(value)
+
+    def _get_main_page(self):
+        log.info("Getting main page %s", MAIN_PAGE_URL)
+        self.driver.get(MAIN_PAGE_URL)
+
+        self.waiter.until(ec.visibility_of_element_located(
+            (By.XPATH, XPATH_LOGIN_BTN_SELECTOR)))
+        log.info("Done.")
+
+    def _login(self):
+        log.info("click to login login button...")
+        self._click_and_expect_element(XPATH_LOGIN_BTN_SELECTOR,
+                                       XPATH_USERNAME_FIELD_SELECTOR)
+        log.info("Enter credentials...")
+        self._fill_filed(XPATH_USERNAME_FIELD_SELECTOR, self.username)
+        self._fill_filed(XPATH_PASSWORD_FIELD_SELECTOR, self.password)
+        self._click_and_expect_element(XPATH_WINDOW_LOGIN_BTN_SELECTOR,
+                                       XPATH_ACTIVE_HOSTNAMES_BTN_SELECTOR)
+
+    def _open_hostname_section(self):
+        log.info("Check hostnames...")
+        self._click_and_expect_element(XPATH_ACTIVE_HOSTNAMES_BTN_SELECTOR,
+                                       XPATH_EXPIRES_LABEL)
+
+    def _get_expiration(self):
+        log.info("Getting expiration...")
+        expiration_label = self.driver.find_element_by_xpath(
+            XPATH_EXPIRES_LABEL)
+        # check text
+        text = expiration_label.text
+        if text.startswith(EXPIRES_LABEL_PREFIX):
+            log.info("Found: %s", text)
+            return int(text.split(" ")[2])
+        else:
+            return -1
+
+    def _close_browser(self):
+        self.driver.quit()
+
+    def check_expiration(self):
+        try:
+            self._get_main_page()
+            self._login()
+            self._open_hostname_section()
+            return self._get_expiration()
+        except Exception as e:
+            log.error("Something went wrong. Err: %s", str(e))
+            return -1
+        finally:
+            self._close_browser()
 
 
 def get_path(path):
@@ -41,115 +158,20 @@ def get_path(path):
     if os.path.isfile(final_path):
         return final_path
     else:
-        raise Exception("Couldn't find webdriver")
+        raise Exception("Couldn't find web driver")
 
 
-def login_to_google(driver, username, password):
-    log.info("Try to log in google")
-    driver.get("https://www.google.com/")
-    sleep(2)
-    google_login_btn = driver.find_element_by_xpath('//*[@id="gb_70"]')
-    google_login_btn.click()
-    sleep(2)
-    google_username_field = driver.find_element_by_xpath(
-        '//*[@id="identifierId"]')
-    google_username_field.send_keys(username)
-    sleep(2)
-    google_next_btn = driver.find_element_by_xpath(
-        '//*[@id="identifierNext"]/content/span')
-    google_next_btn.click()
-    sleep(2)
-    google_password_field = driver.find_element_by_xpath(
-        '//*[@id="password"]/div[1]/div/div[1]/input')
-    google_password_field.send_keys(password)
-    google_next_btn2 = driver.find_element_by_xpath(
-        '//*[@id="passwordNext"]')
-    google_next_btn2.click()
-    sleep(2)
+def send_notofication(api_id, phone_number, message):
+    log.info("Send sms notification")
+    payload = (('api_id', api_id), ('to', phone_number), ('msg', message))
+    response = requests.get(SMS_API_URL, params=payload)
+    response.raise_for_status()
+    log.info("The notification was sent")
 
 
-def update(g_user, g_password, username, password, chromedriver):
-    # configure logger
-    LOGGER.setLevel(logging.WARNING)
-    try:
-        chrome_driver_path = get_path(chromedriver)
-        log.info("Find driver %s", chrome_driver_path)
-        log.info("Initializing selenium chrome webdriver...")
-        chrome_options = Options()
-        # chrome_options.add_argument("--headless")
-        driver = webdriver.Chrome(executable_path=chrome_driver_path,
-                                  options=chrome_options)
-        log.info("Done.")
-        login_to_google(driver, g_user, g_password)
-
-        main_page_url = "https://www.noip.com/"
-        log.info("Getting main page %s", main_page_url)
-        driver.get(main_page_url)
-
-        log.info("Done.")
-
-        log.info("Getting login button...")
-        login_btn = driver.find_element_by_xpath(XPATH_LOGIN_BTN_SELECTOR)
-        log.info("Done")
-
-        log.info("Click to login button...")
-        login_btn.click()
-        log.info("Done")
-
-        sleep(2)
-        log.info("Enter login...")
-        username_field = driver.find_element_by_xpath(
-            XPATH_USERNAME_FIELD_SELECTOR)
-        username_field.send_keys(username)
-        log.info("Done")
-        sleep(2)
-
-        log.info("Enter password...")
-        password_field = driver.find_element_by_xpath(
-            XPATH_PASSWORD_FIELD_SELECTOR)
-        password_field.send_keys(password)
-        log.info("Done")
-        sleep(2)
-
-        log.info("Click to login button...")
-        login_btn_in_window = driver.find_element_by_xpath(
-            XPATH_WINDOW_LOGIN_BTN_SELECTOR)
-        login_btn_in_window.click()
-        log.info("Done")
-        sleep(2)
-
-        log.info("Click to active button...")
-        active_btn = driver.find_element_by_xpath(
-            XPATH_ACTIVE_HOSTNAMES_BTN_SELECTOR)
-        active_btn.click()
-        log.info("Done")
-        sleep(2)
-
-        log.info("Click to active button...")
-        confirm_btn = driver.find_element_by_xpath(XPATH_CONFIRM_BUTTON)
-        log.info("Done")
-        # check text
-        text = confirm_btn.text
-        if text == "Confirm":
-            log.info("Confirm button found")
-            confirm_btn.click()
-            sleep(2)
-            final_accept_btn = driver.find_element_by_xpath(
-                XPATH_FINAL_ACCEPT_BTN_SELECTOR)
-            log.info("Accept button found")
-            final_accept_btn.click()
-            driver.switch_to.default_content()
-            driver.switch_to.frame(driver.find_element_by_xpath(
-                XPATH_CAPCHA_FRAME_SELECTOR))
-            capcha_check_box = driver.find_element_by_xpath(
-                XPATH_CAPCHA_CHECK_SELECTOR)
-            capcha_check_box.click()
-            sleep(20)
-            log.info("Updated")
-            return True
-    except Exception as e:
-        log.error("Something went wrong. Err: %s", str(e))
-    return False
+def parse_config(path_to_config):
+    with open(path_to_config, 'r') as stream:
+        return yaml.load(stream)
 
 
 if __name__ == '__main__':
@@ -162,9 +184,22 @@ if __name__ == '__main__':
                         help='password of no-ip account')
     parser.add_argument('--chromedriver', type=str, default="",
                         help='path to chrome driver')
-    parser.add_argument('--g_username', type=str,
-                        help='username/email of google account')
-    parser.add_argument('--g_password', type=str,
-                        help='password of google account')
+    parser.add_argument('--api_id', type=str, default="",
+                        help='api_id for notifications')
+    parser.add_argument('--phone_number', type=str, default="",
+                        help='phone number for notifications')
+    parser.add_argument('-c', '--config', type=str, required=True,
+                        help='path to config')
     args = parser.parse_args()
-    update(args.g_username, args.g_password, args.username, args.password, args.chromedriver)
+    # configure webdriver logger
+    LOGGER.setLevel(logging.WARNING)
+    config = Config(parse_config(args.config))
+    checker = Checker()
+    checker.configure(config)
+    expiration = checker.check_expiration()
+    log.info("Expiration : %s days", expiration)
+    if expiration < config.threshold:
+        log.info("Expiration less then threshold. Send sms notification.")
+        send_notofication(api_id=config.api_id,
+                          phone_number=config.phone_number,
+                          message=SMS_TEMPLATE % expiration)

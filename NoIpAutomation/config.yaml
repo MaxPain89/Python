@@ -1,0 +1,10 @@
+threshold: 15
+driver:
+  path: drivers/chromedriver
+  headless: True
+no_ip:
+  username: <login for no_ip account>
+  password: <password for no_ip account>
+sms.ru:
+  api_id: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXX
+  phone_number: 7XXXXXXXXXX
