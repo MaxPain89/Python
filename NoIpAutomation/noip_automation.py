@@ -4,7 +4,6 @@ from selenium.webdriver.remote.remote_connection import LOGGER
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as ec
 from selenium.webdriver.common.by import By
-from pyvirtualdisplay import Display
 
 
 import yaml
@@ -12,7 +11,6 @@ import os
 import requests
 
 from selenium import webdriver
-from selenium.webdriver.firefox.options import Options
 
 MAIN_PAGE_URL = "https://www.noip.com/"
 
@@ -53,7 +51,6 @@ class Config:
         self.threshold = config_dict["threshold"]
         self.username = config_dict["no_ip"]["username"]
         self.password = config_dict["no_ip"]["password"]
-        self.headless = config_dict["driver"]["headless"]
         self.path_to_driver = config_dict["driver"]["path"]
         self.api_id = config_dict["sms.ru"]["api_id"]
         self.phone_number = config_dict["sms.ru"]["phone_number"]
@@ -68,20 +65,16 @@ class Checker:
         self.display = None
 
     def configure(self, conf):
-        self.display = Display(visible=0, size=(1600, 1200))
-        self.driver = self._get_driver(conf.path_to_driver, conf.headless)
+        self.driver = self._get_driver(conf.path_to_driver)
+        self.driver.set_window_size(1600, 1200)
         self.username = conf.username
         self.password = conf.password
         self.waiter = self._get_waiter(self.driver)
 
-    def _get_driver(self, driver_path, headless_mode=True):
-        firefox_driver_path = get_path(driver_path)
-        log.info("Find driver %s", firefox_driver_path)
-        log.info("Initializing selenium firefox web driver...")
-        firefox_options = Options()
-        if headless_mode:
-            self.display.start()
-        return webdriver.Firefox(executable_path=firefox_driver_path)
+    @staticmethod
+    def _get_driver(driver_path):
+        log.info("Initializing selenium PhantomJS web driver...")
+        return webdriver.PhantomJS(executable_path=driver_path)
 
     @staticmethod
     def _get_waiter(driver, timeout=30):
@@ -137,7 +130,6 @@ class Checker:
 
     def _close_browser(self):
         self.driver.quit()
-        self.display.stop()
 
     def check_expiration(self):
         try:
@@ -154,7 +146,7 @@ class Checker:
 
 def get_path(path):
     if path == "":
-        final_path = os.path.join(os.path.curdir, "drivers", "gecodriver")
+        final_path = os.path.join(os.path.curdir, "drivers", "phantomjs")
     elif os.path.isabs(path):
         final_path = path
     else:
@@ -165,7 +157,7 @@ def get_path(path):
         raise Exception("Couldn't find web driver")
 
 
-def send_notofication(api_id, phone_number, message):
+def send_notification(api_id, phone_number, message):
     log.info("Send sms notification")
     payload = (('api_id', api_id), ('to', phone_number), ('msg', message))
     response = requests.get(SMS_API_URL, params=payload)
@@ -186,8 +178,8 @@ if __name__ == '__main__':
                         help='username/email of no-ip account')
     parser.add_argument('-p', '--password', type=str,
                         help='password of no-ip account')
-    parser.add_argument('--geckodriver', type=str, default="",
-                        help='path to gecko driver')
+    parser.add_argument('--webdriver', type=str, default="",
+                        help='path to web driver')
     parser.add_argument('--api_id', type=str, default="",
                         help='api_id for notifications')
     parser.add_argument('--phone_number', type=str, default="",
@@ -195,15 +187,15 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--config', type=str, required=True,
                         help='path to config')
     args = parser.parse_args()
-    # configure webdriver logger
+    # configure web driver logger
     LOGGER.setLevel(logging.WARNING)
     config = Config(parse_config(args.config))
     checker = Checker()
     checker.configure(config)
     expiration = checker.check_expiration()
     log.info("Expiration : %s days", expiration)
-    if expiration < config.threshold and expiration > 0:
+    if config.threshold > expiration > 0:
         log.info("Expiration less then threshold. Send sms notification.")
-        send_notofication(api_id=config.api_id,
+        send_notification(api_id=config.api_id,
                           phone_number=config.phone_number,
                           message=SMS_TEMPLATE % expiration)
