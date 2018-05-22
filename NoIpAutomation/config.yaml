@@ -1,6 +1,6 @@
-threshold: 15
+threshold: 7
 driver:
-  path: drivers/chromedriver
+  path: drivers/geckodriver
   headless: True
 no_ip:
   username: <login for no_ip account>
