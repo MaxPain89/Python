@@ -36,9 +36,10 @@ XPATH_FINAL_ACCEPT_BTN_SELECTOR = '//*[@id="content"]/section[3]' \
                                   '/div/div/div[1]/p[2]/a[2]'
 
 XPATH_EXPIRES_LABEL = '//*[@id="host-panel"]/table/tbody/tr/td[1]' \
-                      '/div/span/span/div/a'
+                      '/div/span/span/div'
 
 EXPIRES_LABEL_PREFIX = 'Expires in '
+EXPIRED_LABEL_PREFIX = 'Expired'
 # sms.ru constants
 SMS_TEMPLATE = "Your no-ip hostname expires in %d days"
 SMS_API_URL = "https://sms.ru/sms/send"
@@ -125,6 +126,9 @@ class Checker:
         if text.startswith(EXPIRES_LABEL_PREFIX):
             log.info("Found: %s", text)
             return int(text.split(" ")[2])
+        elif text.startswith(EXPIRED_LABEL_PREFIX):
+            log.info("Found: %s", text)
+            return 0
         else:
             return -1
 
@@ -194,7 +198,7 @@ if __name__ == '__main__':
     checker.configure(config)
     expiration = checker.check_expiration()
     log.info("Expiration : %s days", expiration)
-    if config.threshold > expiration > 0:
+    if config.threshold > expiration >= 0:
         log.info("Expiration less then threshold. Send sms notification.")
         send_notification(api_id=config.api_id,
                           phone_number=config.phone_number,
